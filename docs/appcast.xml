@@ -246,5 +246,14 @@
             <description><![CDATA[<h3>修掉一个会导致随机闪退的严重问题</h3><ul><li><strong>部分 Mac 上的随机闪退</strong>：Typefree 在列出麦克风设备时，对某些音频设备（比如接了 3.5mm 耳机麦、或带多路输入的设备）会写坏自己的内存，之后就可能在任何时候突然退出——每次崩的地方还不一样。现在已经彻底修好。如果你之前遇到「用着突然就没了」，强烈建议更新。</li></ul>]]></description>
             <enclosure url="https://github.com/kdsz001/typefree/releases/download/v3.0.6/Typefree-3.0.6.dmg" sparkle:edSignature="/uvQ9gPlwFxlmmg9dUrIOjY8U2+5qGXPkM/jFDtWEO5MrXsBXC6pfVrM0WRZ2WDOMDFz6gA5py+2eYeUYovaBw==" length="2745776" type="application/octet-stream"/>
         </item>
+        <item>
+            <title>3.0.7</title>
+            <sparkle:version>3.0.7</sparkle:version>
+            <sparkle:shortVersionString>3.0.7</sparkle:shortVersionString>
+            <pubDate>Tue, 22 Sep 2026 16:16:05 +0000</pubDate>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[<h3>说完话文字不再凭空消失</h3><ul><li><strong>光标不在输入框时，文字也保得住</strong>：以前说完松手，如果焦点已经跑到输入框外面（比如点到了桌面或网页空白处），文字会直接丢掉。现在这段文字会留在剪贴板里，并弹一个小提示，按 ⌘V 就能粘到想要的地方。</li><li><strong>菜单栏新增「复制最后一句」</strong>：任何时候都能把刚才说的那句话重新复制一份，不用再翻历史记录。</li></ul><h3>设置存不下来的问题</h3><ul><li><strong>少数 Mac 上「每次打开都像第一次、快捷键改不了」</strong>：原因是这些电脑上的用户配置文件夹被系统或其他软件改成了只有管理员能写，Typefree 建不了自己的文件夹，设置一次都没存成功过。现在遇到这种情况会自动改存到另一个位置；万一还是写不进，首页「配置健康」会明确提示，不再默默失败。</li></ul><h3>小改进</h3><ul><li><strong>菜单栏新增「个人词库…」</strong>：直接打开词库页加词，不用再进主窗口一层层点。</li></ul>]]></description>
+            <enclosure url="https://github.com/kdsz001/typefree/releases/download/v3.0.7/Typefree-3.0.7.dmg" sparkle:edSignature="JcZ7R26j+Aj6g6+iEM9doCJhUMs48TUwqXHjy7Ts5kjyY9X75IRdIRyAKHojkf0W6+AlQg4jYbEyPYhLFVhGDw==" length="2757506" type="application/octet-stream"/>
+        </item>
     </channel>
 </rss>
