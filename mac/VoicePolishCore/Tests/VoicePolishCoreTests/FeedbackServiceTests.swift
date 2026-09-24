@@ -71,6 +71,28 @@ final class FeedbackServiceTests: XCTestCase {
         XCTAssertNil(p?["audio_b64"])
     }
 
+    func testCurrentModelEnvironmentReportsCustomProvider() {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("feedback-custom-tests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let config = VoicePolishConfig(configDir: directory, secrets: InMemorySecretStore())
+        config.save(values: [
+            "bigasr_version": "custom",
+            "custom_asr_endpoint": "https://example.com/v1",
+            "custom_asr_model": "asr-model",
+            "polish_provider": "custom",
+            "custom_polish_endpoint": "https://example.com/v1",
+            "custom_polish_model": "llm-model",
+        ])
+
+        let environment = FeedbackService.ModelEnvironment.current(config: config)
+
+        XCTAssertEqual(environment.asrProvider, "custom")
+        XCTAssertEqual(environment.asrModel, "asr-model")
+        XCTAssertEqual(environment.polishProvider, "custom")
+        XCTAssertEqual(environment.polishModel, "llm-model")
+    }
+
     func testSendRejectsBlankBeforeNetwork() {
         let exp = expectation(description: "blank rejected")
         FeedbackService.send(message: "   ", appVersion: "2.3", apiBase: "https://example.invalid") { result in

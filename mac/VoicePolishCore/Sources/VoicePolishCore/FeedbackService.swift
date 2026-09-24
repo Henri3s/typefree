@@ -47,14 +47,23 @@ public enum FeedbackService {
             self.polishModel = polishModel
         }
 
-        public static func current() -> ModelEnvironment {
-            let asrVersion = CloudASRTranscriber().currentVersion()
-            let polish = AIPolisher.currentPolishSelection()
+        public static func current(config: VoicePolishConfig = .shared) -> ModelEnvironment {
+            let asrVersion = CloudASRTranscriber(config: config).currentVersion()
+            let polish = AIPolisher.currentPolishSelection(config: config)
+            let asrProvider: String
+            switch asrVersion.provider {
+            case .volcano: asrProvider = "volcano"
+            case .bailian: asrProvider = "bailian"
+            case .custom: asrProvider = "custom"
+            }
+            let asrModel = asrVersion == .custom
+                ? (CustomProviderConfiguration.load(role: .asr, config: config)?.model ?? asrVersion.modelIdentifier)
+                : asrVersion.modelIdentifier
             return ModelEnvironment(
                 processingMode: currentProcessingMode().rawValue,
-                asrProvider: asrVersion.provider == .volcano ? "volcano" : "bailian",
+                asrProvider: asrProvider,
                 asrVersion: asrVersion.rawValue,
-                asrModel: asrVersion.modelIdentifier,
+                asrModel: asrModel,
                 asrResourceID: asrVersion.resourceID.isEmpty ? nil : asrVersion.resourceID,
                 polishProvider: polish.provider,
                 polishModel: polish.model

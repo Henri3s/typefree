@@ -165,6 +165,42 @@ final class AIPolisherTests: XCTestCase {
         XCTAssertFalse(AIPolisher.shouldKeepPolishLog(justNow, retention: .off, now: now))
     }
 
+    func testCustomPolishProviderResolvesConfiguredEndpointAndAuth() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("polisher-provider-tests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let config = VoicePolishConfig(configDir: directory, secrets: InMemorySecretStore())
+        config.save(values: [
+            "polish_provider": "custom",
+            "custom_polish_endpoint": "https://example.com/v1",
+            "custom_polish_model": "my-model",
+            "custom_polish_api_key": "secret",
+        ])
+
+        let provider = try XCTUnwrap(AIPolisher(config: config).polishProvider())
+
+        XCTAssertEqual(provider.name, "custom")
+        XCTAssertEqual(provider.url.absoluteString, "https://example.com/v1/chat/completions")
+        XCTAssertEqual(provider.model, "my-model")
+        XCTAssertEqual(provider.apiKey, "secret")
+    }
+
+    func testCurrentPolishSelectionReportsCustomModel() {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("polisher-custom-tests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let config = VoicePolishConfig(configDir: directory, secrets: InMemorySecretStore())
+        config.save(values: [
+            "polish_provider": "custom",
+            "custom_polish_model": "my-model",
+        ])
+
+        let selection = AIPolisher.currentPolishSelection(config: config)
+
+        XCTAssertEqual(selection.provider, "custom")
+        XCTAssertEqual(selection.model, "my-model")
+    }
+
     func testPruneLogFileRewritesOnlyExpiredEntries() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("voicepolish-tests-\(UUID().uuidString)")

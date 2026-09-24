@@ -6,6 +6,7 @@ public final class CloudASRTranscriber {
     public enum ASRProvider {
         case volcano   // 火山引擎
         case bailian   // 阿里百炼（DashScope）
+        case custom    // 用户配置的 OpenAI 兼容服务
     }
 
     /// 可切换的识别版本，各有独立免费额度：火山三档 + 百炼一档。
@@ -15,11 +16,13 @@ public final class CloudASRTranscriber {
         case standard   // 火山标准版 1.0：异步 submit + 轮询 query
         case v2         // 火山 2.0(seedasr)：异步 submit + 轮询 query
         case bailian    // 百炼 qwen3-asr-flash：同步 OpenAI 兼容接口
+        case custom     // 用户配置的 OpenAI 兼容 ASR 服务
 
         public var provider: ASRProvider {
             switch self {
             case .turbo, .standard, .v2: return .volcano
             case .bailian: return .bailian
+            case .custom: return .custom
             }
         }
 
@@ -29,7 +32,7 @@ public final class CloudASRTranscriber {
             case .turbo: return "volc.bigasr.auc_turbo"
             case .standard: return "volc.bigasr.auc"
             case .v2: return "volc.seedasr.auc"
-            case .bailian: return ""
+            case .bailian, .custom: return ""
             }
         }
 
@@ -37,13 +40,14 @@ public final class CloudASRTranscriber {
             switch self {
             case .turbo, .standard, .v2: return resourceID
             case .bailian: return "qwen3-asr-flash"
+            case .custom: return "custom"
             }
         }
 
         /// true = 同步一步出结果（极速版、百炼）；false = 异步 submit/query（火山标准版/2.0）
         public var isSync: Bool {
             switch self {
-            case .turbo, .bailian: return true
+            case .turbo, .bailian, .custom: return true
             case .standard, .v2: return false
             }
         }
@@ -55,6 +59,7 @@ public final class CloudASRTranscriber {
             case .standard: return "标准版"
             case .v2: return "2.0"
             case .bailian: return "百炼"
+            case .custom: return "自定义"
             }
         }
 
@@ -65,6 +70,7 @@ public final class CloudASRTranscriber {
             case .standard: return .v2
             case .v2: return .bailian
             case .bailian: return nil
+            case .custom: return nil
             }
         }
     }
@@ -126,10 +132,12 @@ public final class CloudASRTranscriber {
     private static let bailianURL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
     private static let bailianModel = ASRVersion.bailian.modelIdentifier
 
-    private let config = VoicePolishConfig.shared
+    private let config: VoicePolishConfig
     public var debugLog: ((String) -> Void)?
 
-    public init() {}
+    public init(config: VoicePolishConfig = .shared) {
+        self.config = config
+    }
 
     // 热词词表统一由 PersonalVocabulary 提供（内置 + 自定义 + 个人词库）
 
@@ -142,11 +150,12 @@ public final class CloudASRTranscriber {
         switch version.provider {
         case .volcano: return volcanoCredentials() != nil
         case .bailian: return dashscopeAPIKey() != nil
+        case .custom: return CustomProviderConfiguration.load(role: .asr, config: config) != nil
         }
     }
 
     public func missingConfigurationHint() -> String {
-        "请配置火山引擎的 bigasr_api_key，或阿里百炼的 dashscope_api_key"
+        "请在「设置 → 模型」配置火山引擎、阿里百炼，或自定义 OpenAI 兼容 ASR 服务"
     }
 
     // MARK: - 当前识别版本
@@ -259,10 +268,21 @@ public final class CloudASRTranscriber {
 
     /// 用指定版本识别。
     public func transcribe(samples: [Float], sampleRate: Int = 16000, version: ASRVersion, completion: @escaping (Result<String, Error>) -> Void) {
-        // 优先压缩为 AAC/M4A 上传（体积约为 WAV 的 1/10，弱网更快、更不易超时），编码失败回退 WAV
+        let customConfiguration = version == .custom
+            ? CustomProviderConfiguration.load(role: .asr, config: config)
+            : nil
+        if version == .custom, customConfiguration == nil {
+            completion(.failure(TranscriptionError.missingCredentials))
+            return
+        }
+
+        // 火山/转写接口优先使用体积更小的 M4A；OpenAI 风格 Chat input_audio 只保证 WAV/MP3，
+        // 因此原始 Base64 模式固定用 WAV。Qwen/DashScope 的 Data URL 模式沿用 M4A，失败时再回退 WAV。
         let audioData: Data
         let audioFormat: String
-        if let m4aData = M4AEncoder.makeM4AData(from: samples, sampleRate: sampleRate), !m4aData.isEmpty {
+        let customChatNeedsWAV = version == .custom && customConfiguration?.requestFormat == .chatBase64
+        if !customChatNeedsWAV,
+           let m4aData = M4AEncoder.makeM4AData(from: samples, sampleRate: sampleRate), !m4aData.isEmpty {
             audioData = m4aData
             audioFormat = "m4a"
         } else if let wavData = WAVEncoder.makeWAVData(from: samples, sampleRate: sampleRate), !wavData.isEmpty {
@@ -335,6 +355,16 @@ public final class CloudASRTranscriber {
             }
             debugLog?("Cloud ASR: version=\(version.rawValue) provider=bailian model=\(Self.bailianModel) audio=\(audioFormat)/\(audioData.count / 1024)KB budget=\(Int(budget))s")
             transcribeBailian(audioData: audioData, format: audioFormat, apiKey: apiKey, budgetSeconds: budget, completion: completion)
+        case .custom:
+            guard let customConfiguration else {
+                completion(.failure(TranscriptionError.missingCredentials))
+                return
+            }
+            let requestFormat = customConfiguration.requestFormat ?? .transcriptions
+            debugLog?("Cloud ASR: version=\(version.rawValue) provider=custom model=\(customConfiguration.model) format=\(requestFormat.rawValue) audio=\(audioFormat)/\(audioData.count / 1024)KB budget=\(Int(budget))s")
+            transcribeCustom(audioData: audioData, format: audioFormat,
+                             configuration: customConfiguration, requestFormat: requestFormat,
+                             budgetSeconds: budget, completion: completion)
         }
     }
 
@@ -552,6 +582,210 @@ public final class CloudASRTranscriber {
             let msg = AIPolisher.extractAPIErrorMessage(from: json) ?? "百炼识别失败"
             completion(.failure(TranscriptionError.serverFailed(message: msg)))
         }.resume()
+    }
+
+    // MARK: - 自定义 OpenAI 兼容 ASR
+
+    /// 构造 OpenAI Chat Completions 的 input_audio 请求体。两种数据编码分别对应
+    /// OpenAI 风格（原始 Base64）和 Qwen/DashScope 风格（Data URL）。
+    static func makeCustomChatBody(audioData: Data,
+                                   format: String,
+                                   model: String,
+                                   context: String?,
+                                   dataStyle: CustomProviderConfiguration.ASRRequestFormat) -> [String: Any] {
+        let cleanFormat = format.lowercased()
+        let encoded = audioData.base64EncodedString()
+        let audioDataValue: String
+        switch dataStyle {
+        case .chatDataURL:
+            audioDataValue = "data:\(mimeType(for: cleanFormat));base64,\(encoded)"
+        case .chatBase64, .transcriptions:
+            audioDataValue = encoded
+        }
+
+        var messages: [[String: Any]] = []
+        if let context = context?.trimmingCharacters(in: .whitespacesAndNewlines), !context.isEmpty {
+            let systemContent: Any = dataStyle == .chatDataURL
+                ? [["type": "text", "text": context]]
+                : context
+            messages.append(["role": "system", "content": systemContent])
+        }
+        messages.append([
+            "role": "user",
+            "content": [[
+                "type": "input_audio",
+                "input_audio": ["data": audioDataValue, "format": cleanFormat]
+            ]]
+        ])
+
+        return [
+            "model": model,
+            "messages": messages,
+            "stream": false
+        ]
+    }
+
+    /// 构造 OpenAI `/audio/transcriptions` 的 multipart 请求体。
+    static func makeCustomTranscriptionBody(audioData: Data,
+                                            format: String,
+                                            model: String,
+                                            boundary: String,
+                                            context: String?,
+                                            extraFields: [String: Any]? = nil) throws -> Data {
+        let cleanFormat = format.lowercased()
+        let filename = "recording.\(cleanFormat)"
+        let contentType = mimeType(for: cleanFormat)
+        var body = Data()
+
+        func append(_ string: String) {
+            if let data = string.data(using: .utf8) { body.append(data) }
+        }
+
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n")
+        append("Content-Type: \(contentType)\r\n\r\n")
+        body.append(audioData)
+        append("\r\n--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"model\"\r\n\r\n")
+        append("\(model)\r\n")
+        if let context = context?.trimmingCharacters(in: .whitespacesAndNewlines), !context.isEmpty {
+            append("--\(boundary)\r\n")
+            append("Content-Disposition: form-data; name=\"prompt\"\r\n\r\n")
+            append("\(context)\r\n")
+        }
+        for (key, value) in extraFields ?? [:]
+        where !["file", "model", "prompt"].contains(key) && !key.contains("\r") && !key.contains("\n") {
+            let text: String
+            if let string = value as? String {
+                text = string
+            } else if let number = value as? NSNumber {
+                text = number.stringValue
+            } else if let data = try? JSONSerialization.data(withJSONObject: value),
+                      let string = String(data: data, encoding: .utf8) {
+                text = string
+            } else {
+                continue
+            }
+            append("--\(boundary)\r\n")
+            append("Content-Disposition: form-data; name=\"\(key)\"\r\n\r\n")
+            append("\(text)\r\n")
+        }
+        append("--\(boundary)--\r\n")
+        return body
+    }
+
+    private static func mimeType(for format: String) -> String {
+        switch format {
+        case "wav": return "audio/wav"
+        case "mp3": return "audio/mpeg"
+        case "m4a", "mp4": return "audio/mp4"
+        case "flac": return "audio/flac"
+        case "ogg": return "audio/ogg"
+        case "webm": return "audio/webm"
+        case "aac": return "audio/aac"
+        default: return "application/octet-stream"
+        }
+    }
+
+    private func transcribeCustom(audioData: Data,
+                                  format: String,
+                                  configuration: CustomProviderConfiguration,
+                                  requestFormat: CustomProviderConfiguration.ASRRequestFormat,
+                                  budgetSeconds: TimeInterval,
+                                  completion: @escaping (Result<String, Error>) -> Void) {
+        let context = PersonalVocabulary.asrContextSentence()
+        let boundary = "Typefree-\(UUID().uuidString)"
+        var request = URLRequest(url: configuration.endpoint)
+        request.httpMethod = "POST"
+        request.timeoutInterval = budgetSeconds
+        configuration.applyAuthentication(to: &request)
+
+        let body: Data
+        switch requestFormat {
+        case .transcriptions:
+            do {
+                body = try Self.makeCustomTranscriptionBody(
+                    audioData: audioData,
+                    format: format,
+                    model: configuration.model,
+                    boundary: boundary,
+                    context: context,
+                    extraFields: configuration.extraBody()
+                )
+            } catch {
+                completion(.failure(error))
+                return
+            }
+            request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        case .chatBase64, .chatDataURL:
+            let coreBody = Self.makeCustomChatBody(
+                audioData: audioData,
+                format: format,
+                model: configuration.model,
+                context: context,
+                dataStyle: requestFormat
+            )
+            let bodyObject = configuration.mergedBody(coreBody)
+            do {
+                body = try JSONSerialization.data(withJSONObject: bodyObject)
+            } catch {
+                completion(.failure(error))
+                return
+            }
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+        request.httpBody = body
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error {
+                completion(.failure(TranscriptionError.network(underlying: error)))
+                return
+            }
+            guard let data, !data.isEmpty else {
+                completion(.failure(TranscriptionError.noData))
+                return
+            }
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard (200..<300).contains(status) else {
+                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                let rawMessage = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let message = AIPolisher.extractAPIErrorMessage(from: json)
+                    ?? rawMessage.flatMap { $0.isEmpty ? nil : $0 }
+                    ?? "自定义语音识别失败（HTTP \(status)）"
+                completion(.failure(TranscriptionError.serverFailed(message: message)))
+                return
+            }
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                completion(.failure(TranscriptionError.parseError))
+                return
+            }
+
+            let text: String?
+            if requestFormat == .transcriptions {
+                text = (json["text"] as? String)
+                    ?? (json["transcript"] as? String)
+            } else {
+                text = Self.extractChatCompletionText(from: json)
+            }
+            guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
+                completion(.failure(TranscriptionError.noSpeech))
+                return
+            }
+            completion(.success(text))
+        }.resume()
+    }
+
+    private static func extractChatCompletionText(from json: [String: Any]) -> String? {
+        guard let choices = json["choices"] as? [[String: Any]],
+              let message = choices.first?["message"] as? [String: Any] else {
+            return nil
+        }
+        if let text = message["content"] as? String { return text }
+        if let parts = message["content"] as? [[String: Any]] {
+            let text = parts.compactMap { $0["text"] as? String }.joined()
+            return text.isEmpty ? nil : text
+        }
+        return nil
     }
 
     // MARK: - 共享构造 / 解析

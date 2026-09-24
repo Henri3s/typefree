@@ -12,6 +12,7 @@ public final class VoicePolishConfig {
     static let secretKeys: Set<String> = [
         "ark_api_key", "dashscope_api_key", "bigasr_api_key",
         "bigasr_access_token", "zhipu_api_key",
+        "custom_asr_api_key", "custom_polish_api_key",
     ]
 
     /// 供其他模块读取 config 文件（如热词）

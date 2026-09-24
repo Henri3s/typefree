@@ -98,7 +98,11 @@ public class AIPolisher {
     public var debugLog: ((String) -> Void)?
     public var polishLogAppNameProvider: (() -> String)?
 
-    public init() {}
+    private let config: VoicePolishConfig
+
+    public init(config: VoicePolishConfig = .shared) {
+        self.config = config
+    }
 
     public struct PolishSelection {
         public let provider: String
@@ -110,8 +114,16 @@ public class AIPolisher {
         }
     }
 
-    public static func currentPolishSelection() -> PolishSelection {
-        let config = VoicePolishConfig.shared
+    struct ChatProvider {
+        let name: String
+        let url: URL
+        let model: String
+        let apiKey: String
+        let authHeader: String
+        let customConfiguration: CustomProviderConfiguration?
+    }
+
+    public static func currentPolishSelection(config: VoicePolishConfig = .shared) -> PolishSelection {
         let provider = config.string(forKey: "polish_provider") ?? "qwen"
         if isPolishDisabled(provider: provider) {
             return PolishSelection(provider: "none", model: nil)
@@ -122,9 +134,13 @@ public class AIPolisher {
             return PolishSelection(provider: "qwen", model: (saved?.isEmpty == false) ? saved! : "qwen3.6-flash")
         case "zhipu":
             return PolishSelection(provider: "zhipu", model: config.string(forKey: "zhipu_polish_model") ?? "glm-4.7-flash")
-        default:
+        case "custom":
+            return PolishSelection(provider: "custom", model: config.string(forKey: "custom_polish_model") ?? "custom")
+        case "doubao":
             let saved = config.string(forKey: "doubao_polish_model")
             return PolishSelection(provider: "doubao", model: (saved?.isEmpty == false) ? saved! : defaultDoubaoPolishModel)
+        default:
+            return PolishSelection(provider: provider, model: nil)
         }
     }
 
@@ -211,7 +227,7 @@ public class AIPolisher {
     }
 
     private func configuredTermCorrections() -> [TermCorrection] {
-        guard let data = try? Data(contentsOf: VoicePolishConfig.shared.configFileURL),
+        guard let data = try? Data(contentsOf: config.configFileURL),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let items = json["term_corrections"] as? [[String: Any]] else {
             return []
@@ -233,7 +249,7 @@ public class AIPolisher {
     }
 
     private func configuredPersonalVocabulary() -> [String] {
-        guard let data = try? Data(contentsOf: VoicePolishConfig.shared.configFileURL),
+        guard let data = try? Data(contentsOf: config.configFileURL),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return []
         }
@@ -297,10 +313,10 @@ public class AIPolisher {
         // 基线对齐（owner 2026-07-03 实测定）：润色提示词严格回到线上 2.5.1 的组成。
         // 实测发现叠加"保留/不要改"类条款会让模型整体变怂（废话不删、语序不理、口误不修），
         // 所以词库段和画像段都默认不注入，之后一次只开一个、用真实用例验证再放行。
-        if VoicePolishConfig.shared.bool(forKey: "polish_vocab_injection_enabled", defaultValue: false) {
+        if config.bool(forKey: "polish_vocab_injection_enabled", defaultValue: false) {
             prompt += personalVocabularyPrompt()
         }
-        if VoicePolishConfig.shared.bool(forKey: "style_profile_injection_enabled", defaultValue: false),
+        if config.bool(forKey: "style_profile_injection_enabled", defaultValue: false),
            let styleSection = StyleProfileStore.promptSection(forAppName: polishLogAppNameProvider?()) {
             prompt += "\n\n" + styleSection
         }
@@ -345,7 +361,7 @@ public class AIPolisher {
     }
 
     public func isPolishEnabled() -> Bool {
-        !Self.isPolishDisabled(provider: VoicePolishConfig.shared.string(forKey: "polish_provider"))
+        !Self.isPolishDisabled(provider: config.string(forKey: "polish_provider"))
     }
 
     /// 用户要求本次用某种语言输出时附在待整理文本后面的标记；system prompt 里的「目标语言」一节解释它。
@@ -421,8 +437,8 @@ public class AIPolisher {
         (0x4E00...0x9FFF).contains(Int(scalar.value))
     }
 
-    private func polishProvider() -> (name: String, url: URL, model: String, apiKey: String)? {
-        let config = VoicePolishConfig.shared
+    func polishProvider() -> ChatProvider? {
+        let config = self.config
         let provider = config.string(forKey: "polish_provider") ?? "qwen"
 
         switch provider {
@@ -433,18 +449,30 @@ public class AIPolisher {
             // 未选过 → 自动选择（质量优先 + 额度用完自动降级）；老用户手动选过的值原样保留。
             let model = (saved?.isEmpty == false) ? saved! : PolishModelRouter.autoValue
             let url = URL(string: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")!
-            return ("qwen", url, model, key)
+            return ChatProvider(name: "qwen", url: url, model: model, apiKey: key,
+                                authHeader: "Authorization", customConfiguration: nil)
         case "zhipu":
             guard let key = config.string(forKey: "zhipu_api_key", envKey: "ZHIPU_API_KEY"),
                   !key.isEmpty else { return nil }
             let model = config.string(forKey: "zhipu_polish_model") ?? "glm-4.7-flash"
             let url = URL(string: "https://open.bigmodel.cn/api/paas/v4/chat/completions")!
-            return ("zhipu", url, model, key)
-        default:
+            return ChatProvider(name: "zhipu", url: url, model: model, apiKey: key,
+                                authHeader: "Authorization", customConfiguration: nil)
+        case "custom":
+            guard let custom = CustomProviderConfiguration.load(role: .polish, config: config) else {
+                return nil
+            }
+            return ChatProvider(name: "custom", url: custom.endpoint, model: custom.model,
+                                apiKey: custom.apiKey, authHeader: custom.authHeader,
+                                customConfiguration: custom)
+        case "doubao":
             guard let key = getAPIKey() else { return nil }
             let saved = config.string(forKey: "doubao_polish_model")
             let doubaoModel = (saved?.isEmpty == false) ? saved! : model
-            return ("doubao", apiURL, doubaoModel, key)
+            return ChatProvider(name: "doubao", url: apiURL, model: doubaoModel, apiKey: key,
+                                authHeader: "Authorization", customConfiguration: nil)
+        default:
+            return nil
         }
     }
 
@@ -452,14 +480,14 @@ public class AIPolisher {
     public func polishCloudASROutput(text: String, outputLanguage: OutputLanguage? = nil, completion: @escaping (Result<String, Error>) -> Void) {
         // 会员选了「优先走会员服务」：填了自己的 Key 也走会员通道（用户没选「不优化」时）
         if HostedRoute.current(ownKeyConfigured: polishProvider() != nil) == .member,
-           !Self.isPolishDisabled(provider: VoicePolishConfig.shared.string(forKey: "polish_provider")) {
+           !Self.isPolishDisabled(provider: config.string(forKey: "polish_provider")) {
             polishHosted(route: .member, text: text, outputLanguage: outputLanguage, completion: completion)
             return
         }
         guard let provider = polishProvider() else {
             // 没配自己的 key：试用用户走服务器代理润色（千问，owner 出 API 费）。
             // 用户主动选了"不优化"(none) 则尊重；已激活(买断)用户绝不走试用。
-            let providerSetting = VoicePolishConfig.shared.string(forKey: "polish_provider")
+            let providerSetting = config.string(forKey: "polish_provider")
             let hostedRoute = HostedRoute.current(ownKeyConfigured: false)
             if !Self.isPolishDisabled(provider: providerSetting) && hostedRoute != .none {
                 polishHosted(route: hostedRoute, text: text, outputLanguage: outputLanguage, completion: completion)
@@ -491,10 +519,15 @@ public class AIPolisher {
                 body["temperature"] = 0.1
                 body["max_tokens"] = 2000
                 body["thinking"] = ["type": "disabled"]
-            } else {  // doubao
+            } else if provider.name == "doubao" {
                 body["temperature"] = 0.1
                 body["max_tokens"] = 2000
                 body["thinking"] = ["type": "disabled"]  // 关闭深度思考：润色不需要，且更快
+            } else {  // custom OpenAI-compatible endpoint
+                // 自定义端点只发送通用字段；厂商特有参数放在 custom_*_extra_body。
+            }
+            if let custom = provider.customConfiguration {
+                return custom.mergedBody(body)
             }
             return body
         }
@@ -519,6 +552,7 @@ public class AIPolisher {
                               makeBody: makeBody, completion: finish)
         } else {
             callChatCompletionsWithTokens(url: provider.url, apiKey: provider.apiKey,
+                                          authHeader: provider.authHeader,
                                           body: makeBody(provider.model), completion: finish)
         }
     }
@@ -594,10 +628,27 @@ public class AIPolisher {
 
     // MARK: - HTTP 调用
 
-    private func callChatCompletionsWithTokens(url: URL, apiKey: String, body: [String: Any], completion: @escaping (Result<(String, Int, Int), Error>) -> Void) {
+    private static func contentText(from value: Any?) -> String? {
+        if let text = value as? String { return text }
+        if let parts = value as? [[String: Any]] {
+            let text = parts.compactMap { $0["text"] as? String }.joined()
+            return text.isEmpty ? nil : text
+        }
+        if let object = value as? [String: Any], let text = object["text"] as? String {
+            return text
+        }
+        return nil
+    }
+
+    private func callChatCompletionsWithTokens(url: URL, apiKey: String,
+                                               authHeader: String = "Authorization",
+                                               body: [String: Any],
+                                               completion: @escaping (Result<(String, Int, Int), Error>) -> Void) {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        if let value = CustomProviderConfiguration.authenticationValue(apiKey: apiKey, authHeader: authHeader) {
+            request.setValue(value, forHTTPHeaderField: authHeader)
+        }
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 60
 
@@ -619,13 +670,21 @@ public class AIPolisher {
                 return
             }
 
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard (200..<300).contains(status) else {
+                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                let message = Self.extractAPIErrorMessage(from: json) ?? "HTTP \(status)"
+                completion(.failure(status == 403 ? PolishError.quotaExhausted(message) : PolishError.apiError(message)))
+                return
+            }
+
             do {
                 let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
                 if let json = json,
                    let choices = json["choices"] as? [[String: Any]],
                    let firstChoice = choices.first,
                    let message = firstChoice["message"] as? [String: Any],
-                   let content = message["content"] as? String {
+                   let content = Self.contentText(from: message["content"]) {
                     let usage = json["usage"] as? [String: Any]
                     let inputTokens = usage?["prompt_tokens"] as? Int ?? 0
                     let outputTokens = usage?["completion_tokens"] as? Int ?? 0
@@ -650,7 +709,7 @@ public class AIPolisher {
     private func getAPIKey() -> String? {
         // 统一走 VoicePolishConfig：secret 路由到 Keychain（env 命中后经 saveSecret 持久化）。
         // 旧版遗留的 Keychain item 由 reconcileSecrets / migrateLegacyArkKeychainItem 迁移，此处不再回写明文。
-        VoicePolishConfig.shared.string(forKey: "ark_api_key", envKey: "ARK_API_KEY", persistEnvValue: true)
+        config.string(forKey: "ark_api_key", envKey: "ARK_API_KEY", persistEnvValue: true)
     }
 
     // MARK: - 语音问答（长按问 AI）
@@ -704,7 +763,7 @@ public class AIPolisher {
         let ownProvider = polishProvider()
         let preferHosted = ownProvider != nil && HostedRoute.current(ownKeyConfigured: true) == .member
         guard let provider = ownProvider, !preferHosted else {
-            let providerSetting = VoicePolishConfig.shared.string(forKey: "polish_provider")
+            let providerSetting = config.string(forKey: "polish_provider")
             let hostedRoute = HostedRoute.current(ownKeyConfigured: ownProvider != nil)
             if !Self.isPolishDisabled(provider: providerSetting) && hostedRoute != .none {
                 // 托管问答（试用/会员）一律 qwen3.7-plus，与 owner 自用一致（Ray 2026-09-12）；联网与强制搜索由服务器放行
@@ -715,7 +774,8 @@ public class AIPolisher {
                     if let error { completion(.failure(error)); return }
                     if let data, (response?.statusCode ?? 0) == 200,
                        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                       let content = ((json["choices"] as? [[String: Any]])?.first?["message"] as? [String: Any])?["content"] as? String {
+                       let message = (json["choices"] as? [[String: Any]])?.first?["message"] as? [String: Any],
+                       let content = Self.contentText(from: message["content"]) {
                         let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
                         onPartial?(text)
                         completion(.success(text))
@@ -743,33 +803,69 @@ public class AIPolisher {
                     body["enable_search"] = true
                     if forceSearch { body["search_options"] = ["forced_search": true] }
                 }
+            } else if provider.name == "custom" {
+                // 自定义端点只发送通用字段；厂商特有参数放在 custom_*_extra_body。
             } else {
                 body["temperature"] = 0.5; body["max_tokens"] = 1200; body["thinking"] = ["type": "disabled"]
+            }
+            if let custom = provider.customConfiguration {
+                return custom.mergedBody(body)
             }
             return body
         }
         let candidates: [String] = provider.name == "qwen"
             ? (PolishModelRouter.isAuto(provider.model) ? PolishModelRouter.candidates(for: provider.model) : [provider.model])
             : [provider.model]
-        func attempt(_ index: Int, search: Bool) {
+        func attempt(_ index: Int, search: Bool, didTryNonStreaming: Bool = false) {
             guard index < candidates.count else {
                 completion(.failure(PolishError.apiError("问答模型均不可用（额度用完）")))
                 return
             }
             let model = candidates[index]
-            streamChat(url: provider.url, apiKey: provider.apiKey, body: makeBody(model, search: search), onPartial: onPartial) { [weak self] result in
+            streamChat(url: provider.url, apiKey: provider.apiKey, authHeader: provider.authHeader,
+                       body: makeBody(model, search: search), onPartial: onPartial) { [weak self] result in
                 switch result {
                 case .success(let text):
                     if !text.isEmpty { TrialManager.shared.recordSelfKeyUsage(chars: text.count) }
                     completion(.success(text))
                 case .failure(let err):
+                    // 一些 OpenAI 兼容服务实现完整 Chat Completions，但不实现 SSE。
+                    // 自定义模型遇到明确的 API 错误时退回一次非流式请求，避免“能问但不能流式”。
+                    let canFallbackToNonStreaming: Bool
+                    if case PolishError.apiError = err {
+                        canFallbackToNonStreaming = true
+                    } else if case PolishError.parseError = err {
+                        canFallbackToNonStreaming = true
+                    } else {
+                        canFallbackToNonStreaming = false
+                    }
+                    if provider.name == "custom", !didTryNonStreaming, canFallbackToNonStreaming {
+                        guard let self else {
+                            completion(.failure(err))
+                            return
+                        }
+                        var body = makeBody(model, search: false)
+                        body["stream"] = false
+                        self.callChatCompletionsWithTokens(url: provider.url, apiKey: provider.apiKey,
+                                                            authHeader: provider.authHeader, body: body) { fallbackResult in
+                            switch fallbackResult {
+                            case .success(let (text, _, _)):
+                                if !text.isEmpty { TrialManager.shared.recordSelfKeyUsage(chars: text.count) }
+                                onPartial?(text)
+                                completion(.success(text))
+                            case .failure(let fallbackError):
+                                completion(.failure(fallbackError))
+                            }
+                        }
+                        return
+                    }
                     if case PolishError.quotaExhausted = err {
                         PolishModelRouter.markExhausted(model)
                         self?.debugLog?("Ask: \(model) 额度类失败，降级到下一个")
-                        attempt(index + 1, search: search)
+                        attempt(index + 1, search: search, didTryNonStreaming: didTryNonStreaming)
                     } else if search, case PolishError.apiError = err {
                         self?.debugLog?("Ask with enable_search failed, retrying without: \(err)")
-                        attempt(index, search: false)
+                        attempt(index, search: false, didTryNonStreaming: didTryNonStreaming)
                     } else {
                         completion(.failure(err))
                     }
@@ -780,12 +876,16 @@ public class AIPolisher {
     }
 
     /// OpenAI 兼容的流式对话（SSE）：每收到一段增量就回调累计文本，结束时给完整文本。
-    private func streamChat(url: URL, apiKey: String, body: [String: Any],
+    private func streamChat(url: URL, apiKey: String,
+                            authHeader: String = "Authorization",
+                            body: [String: Any],
                             onPartial: ((String) -> Void)?,
                             completion: @escaping (Result<String, Error>) -> Void) {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        if let value = CustomProviderConfiguration.authenticationValue(apiKey: apiKey, authHeader: authHeader) {
+            request.setValue(value, forHTTPHeaderField: authHeader)
+        }
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 90
@@ -818,7 +918,7 @@ public class AIPolisher {
         }
 
         func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-            guard statusCode == 200 else { errorBody.append(data); return }
+            guard (200..<300).contains(statusCode) else { errorBody.append(data); return }
             buffer.append(data)
             while let range = buffer.range(of: Data([0x0A])) {   // 按行切
                 let lineData = buffer.subdata(in: 0..<range.lowerBound)
@@ -829,8 +929,8 @@ public class AIPolisher {
                 if payload == "[DONE]" { continue }
                 guard let json = try? JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any],
                       let choice = (json["choices"] as? [[String: Any]])?.first else { continue }
-                let piece = ((choice["delta"] as? [String: Any])?["content"] as? String)
-                    ?? ((choice["message"] as? [String: Any])?["content"] as? String)
+                let piece = AIPolisher.contentText(from: (choice["delta"] as? [String: Any])?["content"])
+                    ?? AIPolisher.contentText(from: (choice["message"] as? [String: Any])?["content"])
                 if let piece, !piece.isEmpty {
                     accumulated += piece
                     let snapshot = accumulated
@@ -844,7 +944,7 @@ public class AIPolisher {
             guard !finished else { return }
             finished = true
             if let error { completion(.failure(error)); return }
-            guard statusCode == 200 else {
+            guard (200..<300).contains(statusCode) else {
                 let json = try? JSONSerialization.jsonObject(with: errorBody) as? [String: Any]
                 let message = AIPolisher.extractAPIErrorMessage(from: json) ?? "HTTP \(statusCode)"
                 completion(.failure(statusCode == 403 ? PolishError.quotaExhausted(message) : PolishError.apiError(message)))

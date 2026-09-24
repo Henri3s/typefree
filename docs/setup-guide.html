@@ -308,6 +308,10 @@
     <li><b>「语音优化」：</b>选「百炼（阿里）」，把阿里的钥匙粘进去，再点一次「测试连接」。不想润色就选「不优化」。</li>
   </ol>
 
+  <details><summary>使用其他 OpenAI 兼容服务？</summary>
+    <p>在「语音识别」或「语音优化」中选择「自定义」，填写 API 地址、模型 ID 和 API Key 即可。识别支持 <code>/audio/transcriptions</code>、Chat Completions 的原始 Base64 <code>input_audio</code>，以及 Qwen/DashScope 的 Data URL 格式；本地无鉴权服务可以留空 API Key。详细字段见仓库中的 <a href="custom-model-config.md">自定义模型配置说明</a>。</p>
+  </details>
+
   <!-- FAQ -->
   <div class="step-h" id="s-faq"><span class="step-n">?</span><div><h2>常见问题</h2></div></div>
   <details><summary>找不到「API Key」菜单怎么办？</summary>

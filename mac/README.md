@@ -13,7 +13,7 @@
 - **语音翻译 / 口令**：句首或句尾说「用英文」直接输出英文
 - **词库与纠错学习**：常用词可加进词库；识别错的词改过一次，下次自动认对
 - **历史记录**：所有输入本地加密保存，可导出，保留时长可设
-- **多家模型**：识别用火山引擎，润色用通义千问，自动路由质量与速度
+- **多家模型**：识别用火山引擎，润色用通义千问，自动路由质量与速度；也可配置任意 OpenAI 兼容服务
 
 ## 三种用法
 
@@ -36,6 +36,8 @@ bash scripts/install_app.sh      # 安装到 /Applications，然后自己 open �
 也可以直接用 Xcode 打开 `VoicePolish.xcodeproj`，scheme `VoicePolish`。签名换成你自己的 Team 即可。
 
 **自己编译的版本没有试用和会员通道**（服务器地址不在仓库里，见 `local.build.env.example`），装好后先到「设置 → 模型」填入自己的 API Key——[教程在这里](https://typefree.app/setup-guide.html)，几分钟就能拿到火山引擎的 Key。
+
+也可以在「模型」中选择「自定义」，分别配置任意 **OpenAI 兼容** 的语音识别和润色服务（API 地址、模型 ID、API Key）。语音识别支持 `/audio/transcriptions`、Chat Completions `input_audio` 原始 Base64 和 Qwen/DashScope Data URL 三种请求格式。配置字段、环境变量和兼容范围见 [自定义模型配置说明](../docs/custom-model-config.md)。
 
 运行核心库测试：
 
